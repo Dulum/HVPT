@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Запись слов</title>
+  <style>
+    :root {
+      --bg: #f7f7f5; --fg: #1d1d1b; --muted: #6b6b66; --card: #fff;
+      --accent: #2d6cdf; --rec: #d93a3a; --ok: #2f8f4e; --border: #deded8;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #161615; --fg: #ececea; --muted: #9a9a94; --card: #1f1f1e;
+        --accent: #5b8ff0; --rec: #f06161; --ok: #4fbf72; --border: #33332f;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      background: var(--bg); color: var(--fg);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      padding: 16px;
+    }
+    main {
+      width: 100%; max-width: 480px; background: var(--card);
+      border: 1px solid var(--border); border-radius: 16px;
+      padding: 40px 24px 28px; text-align: center;
+    }
+    .hint { color: var(--muted); font-size: 15px; margin: 0 0 24px; }
+    #word { font-size: clamp(40px, 12vw, 64px); font-weight: 600; margin: 0 0 36px; min-height: 1.2em; }
+    .row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    button {
+      font: inherit; font-size: 17px; padding: 14px 22px; border-radius: 999px;
+      border: 1px solid var(--border); background: transparent; color: var(--fg);
+      cursor: pointer; min-width: 140px;
+    }
+    button:disabled { opacity: .4; cursor: default; }
+    #record { background: var(--rec); border-color: var(--rec); color: #fff; }
+    #record.recording { animation: pulse 1.2s ease-in-out infinite; }
+    #next { background: var(--accent); border-color: var(--accent); color: #fff; }
+    @keyframes pulse { 50% { opacity: .6; } }
+    audio { width: 100%; margin: 24px 0 0; }
+    #status { min-height: 1.4em; margin: 20px 0 0; color: var(--muted); font-size: 15px; }
+    #status.error { color: var(--rec); }
+    #status.ok { color: var(--ok); }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="hint">Прочитайте слово вслух, как обычно.</p>
+    <p id="word">…</p>
+    <div class="row">
+      <button id="record" disabled>● Записать</button>
+      <button id="next" disabled>Далее →</button>
+    </div>
+    <audio id="playback" controls hidden></audio>
+    <p id="status"></p>
+  </main>
+
+  <script type="module">
+    import { WavRecorder } from "./recorder.js";
+
+    const $ = (id) => document.getElementById(id);
+    const wordEl = $("word"), recordBtn = $("record"), nextBtn = $("next");
+    const playback = $("playback"), statusEl = $("status");
+
+    // Send the helper a link like  https://host/?speaker=masha
+    const speaker = new URLSearchParams(location.search).get("speaker") || "unknown";
+
+    const recorder = new WavRecorder();
+    let word = null, blob = null, recording = false;
+
+    function setStatus(text, kind = "") {
+      statusEl.textContent = text;
+      statusEl.className = kind;
+    }
+
+    function resetForWord(w) {
+      word = w;
+      blob = null;
+      wordEl.textContent = w;
+      playback.hidden = true;
+      playback.removeAttribute("src");
+      recordBtn.textContent = "● Записать";
+      recordBtn.disabled = false;
+      nextBtn.disabled = true;
+    }
+
+    async function loadWord() {
+      const res = await fetch("api/word");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      resetForWord((await res.json()).word);
+    }
+
+    recordBtn.addEventListener("click", async () => {
+      if (!recording) {
+        if (!recorder.ctx) {
+          try {
+            await recorder.init();
+          } catch (e) {
+            setStatus("Нет доступа к микрофону: " + e.message, "error");
+            return;
+          }
+        }
+        await recorder.start();
+        recording = true;
+        recordBtn.textContent = "■ Стоп";
+        recordBtn.classList.add("recording");
+        nextBtn.disabled = true;
+        setStatus("Идёт запись…");
+      } else {
+        blob = recorder.stop();
+        recording = false;
+        recordBtn.textContent = "↻ Перезаписать";
+        recordBtn.classList.remove("recording");
+        playback.src = URL.createObjectURL(blob);
+        playback.hidden = false;
+        nextBtn.disabled = false;
+        setStatus("Можно прослушать или перезаписать.");
+      }
+    });
+
+    nextBtn.addEventListener("click", async () => {
+      if (!blob) return;
+      nextBtn.disabled = recordBtn.disabled = true;
+      setStatus("Сохранение…");
+      const form = new FormData();
+      form.append("audio", blob, "recording.wav");
+      form.append("word", word);
+      form.append("speaker", speaker);
+      try {
+        const res = await fetch("api/recordings", { method: "POST", body: form });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        setStatus("Сохранено ✓", "ok");
+        await loadWord();
+      } catch (e) {
+        setStatus("Ошибка сохранения: " + e.message, "error");
+        nextBtn.disabled = recordBtn.disabled = false;
+      }
+    });
+
+    loadWord().catch((e) => setStatus("Не удалось загрузить слово: " + e.message, "error"));
+  </script>
+</body>
+</html>
